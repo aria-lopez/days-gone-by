@@ -11,6 +11,9 @@
 # Test binary, built with `go test -c`
 *.test
 
+dist/
+.kyute/
+
 # Code coverage profiles and other test artifacts
 *.out
 coverage.*
@@ -31,3 +34,6 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Claude suggestions (reference only, implemented manually)
+llm/
