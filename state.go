@@ -9,7 +9,8 @@ import (
 	"strconv"
 
 	"github.com/aria-lopez/days-gone-by/blobby"
-	squel "github.com/aria-lopez/days-gone-by/squeal"
+	"github.com/aria-lopez/days-gone-by/logger"
+	"github.com/aria-lopez/days-gone-by/squeal"
 )
 
 // State ;; application config
@@ -18,12 +19,13 @@ type State struct {
 	maxUpload   int64          // ;; DAYS_GONE_BY_MAX_UPLOAD  ;; max file size to be uploaded            ;; 50mib
 	serverAddr  string         // ;; DAYS_GONE_BY_SERVER_ADDR ;; adress to launch server at [ip]:[port]  ;; 127.0.0.1:8080
 	store       *blobby.Blobby // ;;
-	squel       *squel.Squeal  // ;;
+	squeal      *squeal.Squeal // ;;
+	lock        *os.File       // ;;
 }
 
 // NewState ;; return a new instance of State while trying to parse config
 // error on invalid config
-func NewState(ctx context.Context) (*State, error) {
+func NewState(ctx context.Context) (_ *State, err error) {
 	s := &State{}
 	dp, err := defaultPath()
 	if err != nil {
@@ -31,17 +33,44 @@ func NewState(ctx context.Context) (*State, error) {
 	}
 	s.defaultPath = dp
 
+	if err := os.MkdirAll(dp, 0o700); err != nil {
+		return nil, err
+	}
+
+	lock, err := lockDir(dp)
+	if err != nil {
+		return nil, err
+	}
+	s.lock = lock
+	// any failure below hands everything back, db before the lock like Close()
+	// err is a named result so this sees every return, even the ones from inner scopes
+	defer func() {
+		if err != nil {
+			if s.squeal != nil {
+				s.squeal.ByeBye()
+			}
+			lock.Close()
+		}
+	}()
+
 	store, err := blobby.NewBlobby(s.Blobbypath())
 	if err != nil {
 		return nil, err
 	}
 	s.store = store
 
-	squel, err := squel.NewSqueal(ctx, s.DBpath())
+	// we hold the lock and arent serving yet so nothing in tmp can be a live upload
+	if n, err := store.CleanTmp(); err != nil {
+		return nil, err
+	} else if n > 0 {
+		logger.InfoF("cleaned %d leftover upload files out of tmp", n)
+	}
+
+	db, err := squeal.NewSqueal(ctx, s.DBpath())
 	if err != nil {
 		return nil, err
 	}
-	s.squel = squel
+	s.squeal = db
 
 	var maxUpload int64
 	switch envMaxUp := os.Getenv("DAYS_GONE_BY_MAX_UPLOAD"); envMaxUp {
@@ -99,5 +128,6 @@ func (s *State) Blobbypath() string { return filepath.Join(s.defaultPath, "blobs
 
 // Close ;; Cleans up anything required at destruction of app.
 func (s *State) Close() {
-	s.squel.ByeBye()
+	s.squeal.ByeBye()
+	s.lock.Close()
 }

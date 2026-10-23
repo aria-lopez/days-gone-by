@@ -38,7 +38,7 @@ func getdsn(path string) (string, error) {
 	return u.String(), nil
 }
 
-// NewSqueal ;; Returns a new instance of Squel
+// NewSqueal ;; Returns a new instance of Squeal
 func NewSqueal(ctx context.Context, path string) (*Squeal, error) {
 	s := Squeal{}
 	dsn, err := getdsn(path)

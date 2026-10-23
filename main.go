@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -31,7 +32,7 @@ func run() error {
 	defer state.Close()
 	logger.InfoF(" running addr [%s] path [%s]", state.serverAddr, state.defaultPath)
 
-	api := apeye.NewAPI(state.store, state.squel, int(state.maxUpload))
+	api := apeye.NewAPI(state.store, state.squeal, int(state.maxUpload))
 	srv := &http.Server{
 		Addr:              state.serverAddr,
 		Handler:           api.Routes(),
@@ -40,6 +41,15 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// housekeeping runs in the background until we shut down
+	maintainCtx, cancelMaintain := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	wg.Go(func() { api.Maintain(maintainCtx) })
+	// defers run backwards: cancel, then wait for the sweep to stop, and only then state.Close()
+	// closes the db. the cancel has to be there for the early return below or the wait never ends
+	defer wg.Wait()
+	defer cancelMaintain()
 
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()

@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 type Blobby struct {
@@ -45,10 +47,29 @@ func validateSum(s string) bool {
 
 // NewBlobby ;; Get a new Blobby and mount it to a dir.
 func NewBlobby(dir string) (*Blobby, error) {
-	if err := os.MkdirAll(filepath.Join(dir, "tmp"), 0o700); err != nil {
-		return nil, err
+	// tmp is where uploads are staged, quarantine is where orphans get parked instead of deleted
+	for _, d := range []string{"tmp", "quarantine"} {
+		if err := os.MkdirAll(filepath.Join(dir, d), 0o700); err != nil {
+			return nil, err
+		}
 	}
 	return &Blobby{dir: dir}, nil
+}
+
+// CleanTmp ;; deletes leftovers of uploads that got killed halfway, returns how many.
+// only call this while holding the data dir lock and before serving, otherwise it eats live uploads.
+func (b *Blobby) CleanTmp() (int, error) {
+	tmp := filepath.Join(b.dir, "tmp")
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		return 0, err
+	}
+	for _, e := range entries {
+		if err := os.Remove(filepath.Join(tmp, e.Name())); err != nil {
+			return 0, err
+		}
+	}
+	return len(entries), nil
 }
 
 type BlobInfo struct {
@@ -137,4 +158,57 @@ func (b *Blobby) Delete(s string) error {
 	// make the removal durable, same reason as Put
 	// we leave the empty ab/cd dirs alone, removing one could race a Put thats about to rename into it
 	return syncDir(filepath.Dir(p))
+}
+
+// Walk ;; calls fn for every blob on disk with its sha and mod time, tmp and quarantine are not blobs.
+// only files sitting exactly where Open would look for them count.
+func (b *Blobby) Walk(fn func(sha string, modTime time.Time) error) error {
+	return filepath.WalkDir(b.dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil // something got removed while we were walking
+			}
+			return err
+		}
+		if d.IsDir() {
+			if filepath.Dir(p) == b.dir && (d.Name() == "tmp" || d.Name() == "quarantine") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !validateSum(d.Name()) || p != b.path(d.Name()) {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		return fn(d.Name(), info.ModTime())
+	})
+}
+
+// Quarantine ;; parks a blob in quarantine/ instead of deleting it, ErrNotFound if its not there.
+// to put it back just mv it to <dir>/ab/cd/<sha>
+func (b *Blobby) Quarantine(s string) error {
+	if !validateSum(s) {
+		return ErrNotFound
+	}
+	p := b.path(s)
+	qdir := filepath.Join(b.dir, "quarantine")
+	if err := os.Rename(p, filepath.Join(qdir, s)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ErrNotFound
+		}
+		return err
+	}
+	// both dirs changed, make it durable like Put and Delete
+	for _, d := range []string{filepath.Dir(p), qdir} {
+		if err := syncDir(d); err != nil {
+			return err
+		}
+	}
+	return nil
 }
