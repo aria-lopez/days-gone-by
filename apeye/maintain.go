@@ -10,24 +10,19 @@ import (
 	"github.com/aria-lopez/days-gone-by/squeal"
 )
 
-// FIXME: [config]
-const (
-	purgeEvery   = 10 * time.Minute // ;; how often unused blobs get checked for removal
-	orphanEvery  = 24 * time.Hour   // ;; how often we walk every file looking for orphans
-	orphanMinAge = 24 * time.Hour   // ;; a file younger than this is never an orphan (so we dont scan new stuff)
-	chunkSize    = 25               // ;; blobs handled per lock hold so uploads dont wait on a long sweep
-)
+// chunkSize ;; blobs handled per lock hold so uploads dont wait on a long sweep
+const chunkSize = 25
 
 // Maintain ;; general cleanup for oprhaned files or blobs to be removed
 func (a *API) Maintain(ctx context.Context) {
-	t := time.NewTicker(purgeEvery)
+	t := time.NewTicker(a.cfg.Maintenance.PurgeEvery.Std())
 	defer t.Stop()
 
 	var lastOrphans time.Time // zero so the first loop does it too
 	for {
 		a.sweep(ctx)
 		// a sweep that didnt finish (uploads in flight, error) doesnt count, it runs again next tick
-		if time.Since(lastOrphans) >= orphanEvery && a.sweepOrphans(ctx) {
+		if time.Since(lastOrphans) >= a.cfg.Maintenance.OrphanEvery.Std() && a.sweepOrphans(ctx) {
 			lastOrphans = time.Now()
 		}
 
@@ -68,7 +63,7 @@ func (a *API) sweep(ctx context.Context) {
 // sweepOrphans ;; moves files nobody owns into quarantine/, never deletes them.
 func (a *API) sweepOrphans(ctx context.Context) bool {
 	// 1. look without the lock, this walks every file so it can take a while
-	cutoff := time.Now().Add(-orphanMinAge)
+	cutoff := time.Now().Add(-a.cfg.Maintenance.OrphanMinAge.Std())
 	var orphans []string
 	err := a.store.Walk(func(sha string, modTime time.Time) error {
 		if err := ctx.Err(); err != nil {
@@ -124,7 +119,7 @@ func (a *API) quarantine(ctx context.Context, shas []string) (ran bool, count in
 	defer a.mu.Unlock()
 
 	for _, sha := range shas {
-		// an upload may have linked this file to a live image since the walk
+		// an upload may have linked this file to a live file since the walk
 		_, err := a.squeal.BlobMime(ctx, sha)
 		if err == nil {
 			continue

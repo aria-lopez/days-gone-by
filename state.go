@@ -2,22 +2,20 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 
 	"github.com/aria-lopez/days-gone-by/blobby"
+	"github.com/aria-lopez/days-gone-by/config"
 	"github.com/aria-lopez/days-gone-by/logger"
 	"github.com/aria-lopez/days-gone-by/squeal"
 )
 
-// State ;; application config
+// State ;; application state
 type State struct {
-	defaultPath string         // ;; DAYS_GONE_BY_DIR         ;; where days-gone-by mounts too           ;; defaultPath()
-	maxUpload   int64          // ;; DAYS_GONE_BY_MAX_UPLOAD  ;; max file size to be uploaded            ;; 50mib
-	serverAddr  string         // ;; DAYS_GONE_BY_SERVER_ADDR ;; adress to launch server at [ip]:[port]  ;; 127.0.0.1:8080
+	defaultPath string         // ;; DAYS_GONE_BY_DIR ;; where days-gone-by mounts too ;; defaultPath()
+	cfg         config.Config  // ;; everything else is a setting, see package config
 	store       *blobby.Blobby // ;;
 	squeal      *squeal.Squeal // ;;
 	lock        *os.File       // ;;
@@ -32,6 +30,12 @@ func NewState(ctx context.Context) (_ *State, err error) {
 		return nil, err
 	}
 	s.defaultPath = dp
+
+	cfg, err := config.Load(dp)
+	if err != nil {
+		return nil, err
+	}
+	s.cfg = cfg
 
 	if err := os.MkdirAll(dp, 0o700); err != nil {
 		return nil, err
@@ -71,31 +75,6 @@ func NewState(ctx context.Context) (_ *State, err error) {
 		return nil, err
 	}
 	s.squeal = db
-
-	var maxUpload int64
-	switch envMaxUp := os.Getenv("DAYS_GONE_BY_MAX_UPLOAD"); envMaxUp {
-	case "":
-		maxUpload = 50 << 20 // 50mib
-	default:
-		n, err := strconv.ParseInt(envMaxUp, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("bad DAYS_GONE_BY_MAX_UPLOAD=%q: %w", envMaxUp, err)
-		}
-		if n <= 0 {
-			return nil, fmt.Errorf("bad DAYS_GONE_BY_MAX_UPLOAD must be positive, got %d", n)
-		}
-		maxUpload = n
-	}
-	s.maxUpload = maxUpload
-
-	var serverAddr string
-	switch envServerAddr := os.Getenv("DAYS_GONE_BY_SERVER_ADDR"); envServerAddr {
-	case "":
-		serverAddr = "127.0.0.1:8080"
-	default:
-		serverAddr = envServerAddr
-	}
-	s.serverAddr = serverAddr
 
 	return s, nil
 }

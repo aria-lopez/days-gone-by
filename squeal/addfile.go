@@ -7,8 +7,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// AddImage ;; record to db after Blobby.Put(), createdBy is the id of the api key that uploaded it
-func (s *Squeal) AddImage(ctx context.Context, sha string, size int64, mime string, filename string, createdBy string) (string, error) {
+// AddFile ;; record to db after Blobby.Put(), createdBy is the id of the api key that uploaded it
+func (s *Squeal) AddFile(ctx context.Context, sha string, size int64, mime string, filename string, createdBy string) (string, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return "", err
@@ -37,9 +37,9 @@ func (s *Squeal) AddImage(ctx context.Context, sha string, size int64, mime stri
 	if createdBy != "" {
 		by = createdBy
 	}
-	// no OR IGNORE, a skipped row would still hand back an id for an image that doesnt exist
+	// no OR IGNORE, a skipped row would still hand back an id for a file that doesnt exist
 	query = `
-		INSERT INTO images(id, sha256, origin_node, filename, created_by, created_at, updated_at)
+		INSERT INTO files(id, sha256, origin_node, filename, created_by, created_at, updated_at)
 								 VALUES (?,  ?,      ?,           ?,        ?,          ?,          ?)
 	`
 	if _, err := tx.ExecContext(ctx, query, id.String(), sha, s.nodeID, fn, by, now, now); err != nil {

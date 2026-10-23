@@ -3,6 +3,7 @@ package squeal
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/aria-lopez/days-gone-by/logger"
@@ -10,7 +11,7 @@ import (
 
 // schemaVersion ;; bump when schema.go is updated, and add the migration from the old one.
 // this is kinda a bad way of handling this but the schema shouldnt change often.
-const schemaVersion = 2
+const schemaVersion = 3
 
 // migrations ;; migrations[0] takes a version 1 db to version 2, [1] takes 2 to 3 and so on.
 // each one has to leave the db looking exactly like schema.go would have made it from scratch
@@ -28,6 +29,12 @@ var migrations = []string{
 		revoked_at   INTEGER
 	) STRICT;
 	ALTER TABLE images ADD COLUMN created_by TEXT REFERENCES api_keys(id);
+	`,
+	// v3; images become files
+	`
+	ALTER TABLE images RENAME TO files;
+	DROP INDEX images_sha256;
+	CREATE INDEX files_sha256 ON files(sha256);
 	`,
 }
 
@@ -85,19 +92,27 @@ func (s *Squeal) migrate(ctx context.Context, from int) error {
 	if _, err := s.db.ExecContext(ctx, into); err != nil {
 		return fmt.Errorf("couldnt back up the database before migrating it (is %s already there?): %w", backup, err)
 	}
+	if err := os.Chmod(backup, 0o600); err != nil {
+		return err
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		os.Remove(backup)
 		return err
 	}
 	defer tx.Rollback()
 
+	// if a step fails the rollback leaves the db as it was, so the copy we just made would only block the retry.
+	// (a failed Commit keeps it, we cant be sure what state that left)
 	for v := from; v < schemaVersion; v++ {
 		if _, err := tx.ExecContext(ctx, migrations[v-1]); err != nil {
+			os.Remove(backup)
 			return fmt.Errorf("migrating database from version %d to %d: %w", v, v+1, err)
 		}
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion)); err != nil {
+		os.Remove(backup)
 		return err
 	}
 	if err := tx.Commit(); err != nil {

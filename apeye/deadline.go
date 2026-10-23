@@ -7,12 +7,6 @@ import (
 	"time"
 )
 
-// FIXME: [config]
-const (
-	uploadIdle = 30 * time.Second // ;; a client that sends nothing for this long gets cut off
-	uploadMax  = 30 * time.Minute // ;; no upload may take longer than this, however steady
-)
-
 // deadlineReader ;; allows a slow read to push forward, but only until the hard cutoff time.
 type deadlineReader struct {
 	r    io.Reader

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -17,26 +18,28 @@ import (
 
 	"github.com/aria-lopez/days-gone-by/blobby"
 	"github.com/aria-lopez/days-gone-by/bouncer"
+	"github.com/aria-lopez/days-gone-by/config"
 	"github.com/aria-lopez/days-gone-by/logger"
+	"github.com/aria-lopez/days-gone-by/sniffer"
 	"github.com/aria-lopez/days-gone-by/squeal"
 	"github.com/google/uuid"
 )
 
 // API really its apeye but I kind of hate typing it like that.
 type API struct {
-	store     *blobby.Blobby
-	squeal    *squeal.Squeal
-	bouncer   *bouncer.Bouncer
-	maxUpload int
-	mu        sync.RWMutex // ;; uploads hold RLock, a purge holds the write lock
+	store   *blobby.Blobby
+	squeal  *squeal.Squeal
+	bouncer *bouncer.Bouncer
+	cfg     config.Config
+	mu      sync.RWMutex // ;; uploads hold RLock, a purge holds the write lock
 }
 
-func NewAPI(store *blobby.Blobby, squeal *squeal.Squeal, bouncer *bouncer.Bouncer, maxUpload int) *API {
+func NewAPI(store *blobby.Blobby, squeal *squeal.Squeal, bouncer *bouncer.Bouncer, cfg config.Config) *API {
 	return &API{
-		store:     store,
-		squeal:    squeal,
-		bouncer:   bouncer,
-		maxUpload: maxUpload,
+		store:   store,
+		squeal:  squeal,
+		bouncer: bouncer,
+		cfg:     cfg,
 	}
 }
 
@@ -46,24 +49,18 @@ func (a *API) Routes() http.Handler {
 	b := a.bouncer
 
 	// POST
-	mux.Handle("POST /api/v1/images", b.Require(bouncer.RoleMember, a.postImage))
+	mux.Handle("POST /api/v1/files", b.Require(bouncer.RoleMember, a.postFile))
 	// GET
 	mux.Handle("GET /api/v1/blobs/{sha256}", b.Require(bouncer.RoleViewer, a.getBlob))
-	mux.Handle("GET /api/v1/images/{id}", b.Require(bouncer.RoleViewer, a.getImage))
+	mux.Handle("GET /api/v1/files/{id}", b.Require(bouncer.RoleViewer, a.getFile))
 	// DELETE
-	mux.Handle("DELETE /api/v1/images/{id}", b.Require(bouncer.RoleMember, a.deleteImage))
+	mux.Handle("DELETE /api/v1/files/{id}", b.Require(bouncer.RoleMember, a.deleteFile))
 	mux.Handle("DELETE /api/v1/blobs/{sha256}", b.Require(bouncer.RoleAdmin, a.deleteBlob))
 
 	return mux
 }
 
 // TODO: move all these to their own files
-
-var allowedImages = map[string]bool{
-	"image/jpeg": true,
-	"image/png":  true,
-	"image/webp": true,
-}
 
 const maxFilename = 255
 
@@ -86,18 +83,23 @@ func cleanFilename(s string) string {
 	return s
 }
 
-func (a *API) postImage(w http.ResponseWriter, r *http.Request) {
-	// read up until our maxUpload
-	r.Body = http.MaxBytesReader(w, r.Body, int64(a.maxUpload))
-	// and dont wait on clients that go quiet, a stuck upload would hold mu.RLock for ever
-	body := bufio.NewReader(&deadlineReader{
+func (a *API) postFile(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	top := a.cfg.Largest()
+	if r.ContentLength > int64(top.MaxSize) {
+		http.Error(w, "file too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+
+	// until we know the kind the largest limits apply. dont wait on clients that go quiet, a stuck upload would hold mu.RLock for ever
+	dr := &deadlineReader{
 		r:    r.Body,
 		rc:   http.NewResponseController(w),
-		idle: uploadIdle,
-		hard: time.Now().Add(uploadMax),
-	})
-	// verify file format
-	head, err := body.Peek(512)
+		idle: a.cfg.IdleTimeout.Std(),
+		hard: start.Add(top.Timeout.Std()),
+	}
+	body := bufio.NewReader(dr)
+	head, err := body.Peek(sniffer.HeadSize)
 	if err != nil && !errors.Is(err, io.EOF) {
 		if errors.Is(err, os.ErrDeadlineExceeded) {
 			// connected, sent headers, then never sent a body
@@ -111,39 +113,48 @@ func (a *API) postImage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "empty upload", http.StatusBadRequest)
 		return
 	}
-	mime := http.DetectContentType(head)
-	if !allowedImages[mime] {
-		http.Error(w, "unsupported file type", http.StatusUnsupportedMediaType)
+	mime, kind, ok := sniffer.Sniff(head)
+	if !ok {
+		http.Error(w, "unsupported file type "+mime, http.StatusUnsupportedMediaType)
 		return
 	}
+
+	limit := a.cfg.Limit(kind)
+	tooBig := fmt.Sprintf("%s files can be at most %s", kind, limit.MaxSize)
+	if r.ContentLength > int64(limit.MaxSize) {
+		http.Error(w, tooBig, http.StatusRequestEntityTooLarge)
+		return
+	}
+	dr.hard = start.Add(limit.Timeout.Std())
+	upload := http.MaxBytesReader(w, io.NopCloser(body), int64(limit.MaxSize))
 
 	// uploads can run together, but never while a purge is deciding what to delete
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
 	// put that file into blobby :)
-	info, err := a.store.Put(body)
+	info, err := a.store.Put(upload)
 	if err != nil {
 		var itsTooBig *http.MaxBytesError
 		switch {
 		case errors.As(err, &itsTooBig):
-			logger.ErrorF(err, "POST /api/v1/images failed file too large")
-			http.Error(w, "image too large", http.StatusRequestEntityTooLarge)
+			logger.ErrorF(err, "POST /api/v1/files failed file too large")
+			http.Error(w, tooBig, http.StatusRequestEntityTooLarge)
 		case errors.Is(err, os.ErrDeadlineExceeded):
-			logger.ErrorF(err, "POST /api/v1/images failed client stopped sending")
+			logger.ErrorF(err, "POST /api/v1/files failed client stopped sending")
 			http.Error(w, "upload timed out", http.StatusRequestTimeout)
 		default:
 			// internal error
-			logger.ErrorF(err, "POST /api/v1/images failed error during Blobby.Put()")
+			logger.ErrorF(err, "POST /api/v1/files failed error during Blobby.Put()")
 			http.Error(w, "internal error", http.StatusInternalServerError)
 		}
 		return
 	}
 
 	who, _ := bouncer.From(r.Context())
-	id, err := a.squeal.AddImage(r.Context(), info.SHA256, info.Size, mime, cleanFilename(r.URL.Query().Get("filename")), who.KeyID)
+	id, err := a.squeal.AddFile(r.Context(), info.SHA256, info.Size, mime, cleanFilename(r.URL.Query().Get("filename")), who.KeyID)
 	if err != nil {
-		logger.ErrorF(err, "POST /api/v1/images internal error during Squeal.AddImage")
+		logger.ErrorF(err, "POST /api/v1/files internal error during Squeal.AddFile")
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -154,9 +165,10 @@ func (a *API) postImage(w http.ResponseWriter, r *http.Request) {
 		"sha256": info.SHA256,
 		"size":   info.Size,
 		"mime":   mime,
+		"kind":   kind,
 		"id":     id,
 	})
-	logger.InfoF("POST /api/v1/images succeeded sha256 [%s] by key [%s]", info.SHA256, who.Name)
+	logger.InfoF("POST /api/v1/files succeeded sha256 [%s] by key [%s]", info.SHA256, who.Name)
 }
 
 // getBlob ;; returns [Blob] of a given sha256 if it exists
@@ -190,32 +202,35 @@ func (a *API) getBlob(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("ETag", `"`+sum+`"`)
 	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if !sniffer.Inline(mime) {
+		w.Header().Set("Content-Disposition", "attachment")
+	}
 
 	logger.InfoF("GET /api/v1/blobs/%s serving blob...", sum)
 	http.ServeContent(w, r, "", time.Time{}, f)
 }
 
-// getImage ;; gets an image
-func (a *API) getImage(w http.ResponseWriter, r *http.Request) {
+// getFile ;; gets a file
+func (a *API) getFile(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if u, err := uuid.Parse(id); err != nil || u.String() != id {
 		http.NotFound(w, r)
 		return
 	}
 
-	img, err := a.squeal.GetImage(r.Context(), id)
+	file, err := a.squeal.GetFile(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, squeal.ErrNotFound) {
 			http.NotFound(w, r)
 			return
 		}
-		logger.ErrorF(err, "GET /api/v1/images/%s internal error", id)
+		logger.ErrorF(err, "GET /api/v1/files/%s internal error", id)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	logger.InfoF("GET /api/v1/images/%s serving image...", id)
+	logger.InfoF("GET /api/v1/files/%s serving file...", id)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(img)
+	json.NewEncoder(w).Encode(file)
 }
 
 // purge ;; removes []shas ([]Blobs) unless a live record still uses them. returns false if uploads are in-flight
@@ -226,7 +241,7 @@ func (a *API) purge(ctx context.Context, shas []string) (bool, error) {
 	defer a.mu.Unlock()
 
 	for _, sha := range shas {
-		// checked again under the lock, an upload may have given it a live image since
+		// checked again under the lock, an upload may have given it a live file since
 		inUse, err := a.squeal.BlobInUse(ctx, sha)
 		if err != nil {
 			return true, err
@@ -246,31 +261,31 @@ func (a *API) purge(ctx context.Context, shas []string) (bool, error) {
 	return true, nil
 }
 
-// deleteImage ;; tombstone an image - not a hard delete
-func (a *API) deleteImage(w http.ResponseWriter, r *http.Request) {
+// deleteFile ;; tombstone a file - not a hard delete
+func (a *API) deleteFile(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if u, err := uuid.Parse(id); err != nil || u.String() != id {
 		http.NotFound(w, r)
 		return
 	}
 
-	sha, err := a.squeal.DeleteImage(r.Context(), id)
+	sha, err := a.squeal.DeleteFile(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, squeal.ErrNotFound) {
 			http.NotFound(w, r)
 			return
 		}
-		logger.ErrorF(err, "DELETE /api/v1/images/%s internal error during Squeal.DeleteImage", id)
+		logger.ErrorF(err, "DELETE /api/v1/files/%s internal error during Squeal.DeleteFile", id)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
 	// take a look at if it needs to be purged
 	if _, err := a.purge(r.Context(), []string{sha}); err != nil {
-		logger.ErrorF(err, "DELETE /api/v1/images/%s purge failed", id)
+		logger.ErrorF(err, "DELETE /api/v1/files/%s purge failed", id)
 	}
 
-	logger.InfoF("DELETE /api/v1/images/%s succeeded", id)
+	logger.InfoF("DELETE /api/v1/files/%s succeeded", id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -303,7 +318,7 @@ func (a *API) deleteBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if inUse {
-		http.Error(w, "blob is used by a live image", http.StatusConflict)
+		http.Error(w, "blob is used by a live file", http.StatusConflict)
 		return
 	}
 

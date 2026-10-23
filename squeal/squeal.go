@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/url"
+	"os"
 	"path/filepath"
 
 	"github.com/google/uuid"
@@ -47,6 +48,20 @@ func NewSqueal(ctx context.Context, path string) (*Squeal, error) {
 		return nil, err
 	}
 	s.path = abs
+
+	f, err := os.OpenFile(abs, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	// closed before sqlite opens the file, closing another handle to it later would drop sqlite's locks
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		return nil, err
+	}
+	if err := f.Close(); err != nil {
+		return nil, err
+	}
+
 	dsn, err := getdsn(abs)
 	if err != nil {
 		return nil, err

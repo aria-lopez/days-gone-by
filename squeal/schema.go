@@ -28,16 +28,16 @@ CREATE TABLE IF NOT EXISTS api_keys (
 	revoked_at   INTEGER -- NULL = active, keys are revoked never deleted
 ) STRICT;
 
-CREATE TABLE IF NOT EXISTS images (
+CREATE TABLE IF NOT EXISTS files (
 	id          TEXT PRIMARY KEY,
 	sha256      TEXT NOT NULL REFERENCES blobs(sha256),
 	origin_node TEXT NOT NULL,
 	filename    TEXT,
-	created_by  TEXT REFERENCES api_keys(id), -- key that uploaded it, NULL = from before keys existed
 	created_at  INTEGER NOT NULL,
 	updated_at  INTEGER NOT NULL,
-	deleted_at  INTEGER -- NULL = live, set = tombstone
+	deleted_at  INTEGER, -- NULL = live, set = tombstone
+	created_by  TEXT REFERENCES api_keys(id) -- key that uploaded it, NULL = from before keys existed. last because ALTER TABLE can only add at the end
 ) STRICT;
 
-CREATE INDEX IF NOT EXISTS images_sha256 ON images(sha256);
+CREATE INDEX IF NOT EXISTS files_sha256 ON files(sha256);
 `

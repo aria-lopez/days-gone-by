@@ -5,13 +5,13 @@ import (
 	"time"
 )
 
-// PurgeCandidates ;; sha of every blob that still has bytes but no live image
+// PurgeCandidates ;; sha of every blob that still has bytes but no live file
 func (s *Squeal) PurgeCandidates(ctx context.Context) ([]string, error) {
 	query := `
 		SELECT b.sha256 FROM blobs b
 		WHERE b.purged_at IS NULL
 		AND NOT EXISTS (
-			SELECT 1 FROM images i WHERE i.sha256 = b.sha256 AND i.deleted_at IS NULL
+			SELECT 1 FROM files f WHERE f.sha256 = b.sha256 AND f.deleted_at IS NULL
 		)
 	`
 	rows, err := s.db.QueryContext(ctx, query)

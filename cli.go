@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/aria-lopez/days-gone-by/bouncer"
+	"github.com/aria-lopez/days-gone-by/config"
 	"github.com/aria-lopez/days-gone-by/squeal"
 )
 
@@ -23,14 +25,16 @@ const usage = `usage: days-gone-by <command>
 commands:
   init                          create the data dir and database, and the first admin API key
   serve                         run the server
+  config                        print the settings in effect as JSON, a starting point for config.json
   key new [--role R] NAME       create an API key, R is viewer, member (default) or admin
   key list                      list API keys
   key revoke ID                 revoke an API key
 
 environment:
   DAYS_GONE_BY_DIR              where the data lives
-  DAYS_GONE_BY_SERVER_ADDR      address to listen on, default 127.0.0.1:8080
-  DAYS_GONE_BY_MAX_UPLOAD       biggest upload in bytes, default 50 MiB
+  DAYS_GONE_BY_CONFIG           config file, default <data dir>/config.json
+  DAYS_GONE_BY_<SETTING>        beats the config file, e.g. SERVER_ADDR, IDLE_TIMEOUT, VIDEO_MAX_SIZE=8GiB,
+                                IMAGE_TIMEOUT=5m, PURGE_EVERY
 `
 
 // dispatch ;; picks the command.
@@ -52,6 +56,11 @@ func dispatch(args []string) error {
 			return errUsage
 		}
 		return serve() // runs for as long as the server does, so no 60 second ctx
+	case "config":
+		if len(args) != 1 {
+			return errUsage
+		}
+		return cmdConfig()
 	case "key":
 		return dispatchKey(ctx, args[1:])
 	}
@@ -109,6 +118,23 @@ func showKey(stderr io.Writer, token string, id string, name string, role bounce
 	fmt.Fprintln(stderr, "save it now, it is not stored anywhere and can never be shown again:")
 	fmt.Println(token)
 	fmt.Fprintln(stderr, "\nuse it like:  curl -H \"Authorization: Bearer <key>\" http://<addr>/api/v1/images/<id>")
+}
+
+func cmdConfig() error {
+	dp, err := defaultPath()
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(dp)
+	if err != nil {
+		return err
+	}
+	out, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(out))
+	return nil
 }
 
 func cmdInit(ctx context.Context) error {

@@ -62,14 +62,14 @@ func serve() error {
 		return errors.New("there are no api keys yet, run `days-gone-by init` first")
 	}
 
-	logger.InfoF(" running addr [%s] path [%s] api keys [%d]", state.serverAddr, state.defaultPath, total)
-	if !isLoopback(state.serverAddr) {
-		logger.InfoF("WARNING [%s] is reachable from other machines and keys travel in a header, put TLS (a reverse proxy) in front of it", state.serverAddr)
+	logger.InfoF(" running addr [%s] path [%s] api keys [%d]", state.cfg.ServerAddr, state.defaultPath, total)
+	if !isLoopback(state.cfg.ServerAddr) {
+		logger.InfoF("WARNING [%s] is reachable from other machines and keys travel in a header, put TLS (a reverse proxy) in front of it", state.cfg.ServerAddr)
 	}
 
-	api := apeye.NewAPI(state.store, state.squeal, bouncer.New(state.squeal), int(state.maxUpload))
+	api := apeye.NewAPI(state.store, state.squeal, bouncer.New(state.squeal), state.cfg)
 	srv := &http.Server{
-		Addr:              state.serverAddr,
+		Addr:              state.cfg.ServerAddr,
 		Handler:           api.Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}

@@ -3,12 +3,13 @@ module github.com/aria-lopez/days-gone-by
 go 1.26.0
 
 require (
+	github.com/dustin/go-humanize v1.1.0
+	github.com/gabriel-vasile/mimetype v1.4.16
 	github.com/google/uuid v1.6.0
 	modernc.org/sqlite v1.61.0
 )
 
 require (
-	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
