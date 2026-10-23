@@ -6,7 +6,11 @@ Feel free to fork and change it or suggest PR's.
 
 ## System requirements
 
-Currently support is for Linux/MacOS only.
+- Linux or macOS, amd64 or arm64. Windows is not supported.
+- A local disk. Not NFS or SMB, file locking and SQLite do not work reliably on network drives.
+- Free disk space for what you store, plus room for the database. Uploads are staged in `<data dir>/blobs/tmp` first, so the disk needs space for the biggest upload too.
+- Go 1.26 or newer to build from source. No C compiler needed.
+- No TLS built in, the server speaks plain HTTP. If other machines can reach it, put a TLS reverse proxy (nginx, Caddy) in front.
 
 ## Installing
 
@@ -129,6 +133,13 @@ Errors are plain text. Common to all routes:
 
 Times are unix milliseconds. Ids are UUIDs.
 
+The curl examples below need `curl` and `jq`, and use these:
+
+```sh
+export API=http://127.0.0.1:8080/api/v1
+export KEY=dgb_...        # from `days-gone-by init` or `days-gone-by key new`
+```
+
 ### POST /files
 
 Upload a file. Role: member.
@@ -157,6 +168,62 @@ Upload a file. Role: member.
 
 Same bytes uploaded again get a new id and share one stored blob.
 
+```sh
+RES=$(curl -s -X POST -H "Authorization: Bearer $KEY" \
+  --data-binary @cat.png "$API/files?filename=cat.png")
+echo "$RES"
+ID=$(echo "$RES" | jq -r .id)         # used by the examples below
+SHA=$(echo "$RES" | jq -r .sha256)
+```
+
+### GET /files
+
+List files, newest first. Role: viewer.
+
+| Query | Default | |
+|---|---|---|
+| `limit` | 50 | page size, 1 to 200 |
+| `after` | | start after this id, use `next` from the previous page |
+| `sha256` | | only files with these bytes |
+
+`200`
+```json
+{
+  "files": [
+    {
+      "id": "01a16796-15ed-7d72-bdb4-f14471dacbad",
+      "sha256": "890be7b729e982b329ae32c28b0fc28918b5e5dfc196e9363821a0b1b2c3d4e5",
+      "size": 113,
+      "mime": "application/zip",
+      "filename": "notes.zip",
+      "created_at": 1761177700000,
+      "updated_at": 1761177700000
+    }
+  ],
+  "next": "01a16796-15ed-7d72-bdb4-f14471dacbad"
+}
+```
+
+Each item is the same as `GET /files/{id}`. `next` is `null` on the last page.
+
+| Status | Meaning |
+|---|---|
+| 400 | bad `limit`, `after` or `sha256` |
+
+```sh
+# first page
+curl -s -H "Authorization: Bearer $KEY" "$API/files?limit=20" | jq
+
+# every file, page by page
+after=""
+while :; do
+  page=$(curl -s -H "Authorization: Bearer $KEY" "$API/files?limit=100${after:+&after=$after}")
+  echo "$page" | jq -r '.files[] | "\(.id)  \(.filename)"'
+  after=$(echo "$page" | jq -r '.next // empty')
+  [ -z "$after" ] && break
+done
+```
+
 ### GET /files/{id}
 
 File metadata. Role: viewer.
@@ -180,6 +247,10 @@ File metadata. Role: viewer.
 |---|---|
 | 404 | no such file, or deleted |
 
+```sh
+curl -s -H "Authorization: Bearer $KEY" "$API/files/$ID" | jq
+```
+
 ### DELETE /files/{id}
 
 Delete a file. Role: member.
@@ -189,6 +260,11 @@ The stored bytes are removed once no other file uses them.
 |---|---|
 | 204 | deleted |
 | 404 | no such file, or already deleted |
+
+```sh
+# $ID and $SHA stop working after this, upload again to keep trying the examples
+curl -s -X DELETE -H "Authorization: Bearer $KEY" -w '%{http_code}\n' "$API/files/$ID"
+```
 
 ### GET /blobs/{sha256}
 
@@ -203,6 +279,14 @@ The file bytes. Role: viewer.
 | 200 / 206 | bytes |
 | 404 | no such blob, or its bytes were removed |
 
+```sh
+# download
+curl -s -H "Authorization: Bearer $KEY" -o cat-copy.png "$API/blobs/$SHA"
+
+# only the first 100 bytes
+curl -s -H "Authorization: Bearer $KEY" -H "Range: bytes=0-99" "$API/blobs/$SHA" | wc -c
+```
+
 ### DELETE /blobs/{sha256}
 
 Remove the bytes of a blob right now. Role: admin.
@@ -213,6 +297,11 @@ Remove the bytes of a blob right now. Role: admin.
 | 404 | no such blob |
 | 409 | a live file still uses it |
 | 503 | uploads in progress, retry (`Retry-After: 1`) |
+
+```sh
+# KEY must belong to an admin
+curl -s -X DELETE -H "Authorization: Bearer $KEY" -w '%{http_code}\n' "$API/blobs/$SHA"
+```
 
 ## Accepted file types
 

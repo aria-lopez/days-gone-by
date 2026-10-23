@@ -72,6 +72,7 @@ func serve() error {
 		Addr:              state.cfg.ServerAddr,
 		Handler:           api.Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute, // between requests on a kept-alive connection, unset means for ever
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

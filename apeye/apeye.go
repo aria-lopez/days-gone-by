@@ -4,12 +4,14 @@ package apeye
 import (
 	"bufio"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -52,6 +54,7 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("POST /api/v1/files", b.Require(bouncer.RoleMember, a.postFile))
 	// GET
 	mux.Handle("GET /api/v1/blobs/{sha256}", b.Require(bouncer.RoleViewer, a.getBlob))
+	mux.Handle("GET /api/v1/files", b.Require(bouncer.RoleViewer, a.listFiles))
 	mux.Handle("GET /api/v1/files/{id}", b.Require(bouncer.RoleViewer, a.getFile))
 	// DELETE
 	mux.Handle("DELETE /api/v1/files/{id}", b.Require(bouncer.RoleMember, a.deleteFile))
@@ -231,6 +234,52 @@ func (a *API) getFile(w http.ResponseWriter, r *http.Request) {
 	logger.InfoF("GET /api/v1/files/%s serving file...", id)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(file)
+}
+
+const (
+	defaultPage = 50
+	maxPage     = 200
+)
+
+// listFiles ;; one page of files, newest first. "next" is the id to pass as ?after= for the following page, null on the last one
+func (a *API) listFiles(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+
+	limit := defaultPage
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > maxPage {
+			http.Error(w, fmt.Sprintf("limit must be 1 to %d", maxPage), http.StatusBadRequest)
+			return
+		}
+		limit = n
+	}
+	after := q.Get("after")
+	if u, err := uuid.Parse(after); after != "" && (err != nil || u.String() != after) {
+		http.Error(w, "after must be a file id", http.StatusBadRequest)
+		return
+	}
+	sha := strings.ToLower(q.Get("sha256"))
+	if _, err := hex.DecodeString(sha); sha != "" && (err != nil || len(sha) != 64) {
+		http.Error(w, "sha256 must be 64 hex characters", http.StatusBadRequest)
+		return
+	}
+
+	// one more than asked for tells us whether there is a next page
+	files, err := a.squeal.ListFiles(r.Context(), after, sha, limit+1)
+	if err != nil {
+		logger.ErrorF(err, "GET /api/v1/files internal error during Squeal.ListFiles")
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	var next *string
+	if len(files) > limit {
+		files = files[:limit]
+		next = &files[limit-1].ID
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"files": files, "next": next})
 }
 
 // purge ;; removes []shas ([]Blobs) unless a live record still uses them. returns false if uploads are in-flight
