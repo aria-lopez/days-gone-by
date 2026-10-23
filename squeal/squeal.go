@@ -1,19 +1,25 @@
-// Package squel ;; implementation of sqlite :)
-package squel
+// Package squeal ;; implementation of sqlite :)
+package squeal
 
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/url"
 	"path/filepath"
 
+	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
 )
 
-type Squel struct {
-	db *sql.DB
+var ErrNotFound = errors.New("not found")
+
+type Squeal struct {
+	db     *sql.DB
+	nodeID string
 }
 
+// utils
 func getdsn(path string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -32,9 +38,9 @@ func getdsn(path string) (string, error) {
 	return u.String(), nil
 }
 
-// NewSquel ;; Returns a new instance of Squel
-func NewSquel(ctx context.Context, path string) (*Squel, error) {
-	s := Squel{}
+// NewSqueal ;; Returns a new instance of Squel
+func NewSqueal(ctx context.Context, path string) (*Squeal, error) {
+	s := Squeal{}
 	dsn, err := getdsn(path)
 	if err != nil {
 		return nil, err
@@ -51,11 +57,26 @@ func NewSquel(ctx context.Context, path string) (*Squel, error) {
 		s.db.Close()
 		return nil, err
 	}
+	if err := s.init(ctx); err != nil {
+		s.db.Close()
+		return nil, err
+	}
 
 	return &s, nil
 }
 
+func (s *Squeal) init(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, schema); err != nil {
+		return err
+	}
+	// seed meta for node
+	if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO meta(key, value) VALUES ('node_id', ?)`, uuid.NewString()); err != nil {
+		return err
+	}
+	return s.db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'node_id'`).Scan(&s.nodeID)
+}
+
 // ByeBye ;; Say goodbye to the *sql.DB connection!
-func (s *Squel) ByeBye() error {
+func (s *Squeal) ByeBye() error {
 	return s.db.Close()
 }

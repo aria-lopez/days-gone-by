@@ -121,3 +121,20 @@ func (b *Blobby) Open(s string) (*os.File, error) {
 	}
 	return f, err
 }
+
+// Delete ;; removes a blob by its hash, ErrNotFound if its already gone
+func (b *Blobby) Delete(s string) error {
+	if !validateSum(s) {
+		return ErrNotFound
+	}
+	p := b.path(s)
+	if err := os.Remove(p); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ErrNotFound
+		}
+		return err
+	}
+	// make the removal durable, same reason as Put
+	// we leave the empty ab/cd dirs alone, removing one could race a Put thats about to rename into it
+	return syncDir(filepath.Dir(p))
+}

@@ -18,7 +18,7 @@ type State struct {
 	maxUpload   int64          // ;; DAYS_GONE_BY_MAX_UPLOAD  ;; max file size to be uploaded            ;; 50mib
 	serverAddr  string         // ;; DAYS_GONE_BY_SERVER_ADDR ;; adress to launch server at [ip]:[port]  ;; 127.0.0.1:8080
 	store       *blobby.Blobby // ;;
-	squel       *squel.Squel   // ;;
+	squel       *squel.Squeal  // ;;
 }
 
 // NewState ;; return a new instance of State while trying to parse config
@@ -37,7 +37,7 @@ func NewState(ctx context.Context) (*State, error) {
 	}
 	s.store = store
 
-	squel, err := squel.NewSquel(ctx, s.DBpath())
+	squel, err := squel.NewSqueal(ctx, s.DBpath())
 	if err != nil {
 		return nil, err
 	}

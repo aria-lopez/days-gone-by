@@ -31,7 +31,7 @@ func run() error {
 	defer state.Close()
 	logger.InfoF(" running addr [%s] path [%s]", state.serverAddr, state.defaultPath)
 
-	api := apeye.NewAPI(state.store, int(state.maxUpload))
+	api := apeye.NewAPI(state.store, state.squel, int(state.maxUpload))
 	srv := &http.Server{
 		Addr:              state.serverAddr,
 		Handler:           api.Routes(),
