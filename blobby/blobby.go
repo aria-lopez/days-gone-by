@@ -56,8 +56,7 @@ func NewBlobby(dir string) (*Blobby, error) {
 	return &Blobby{dir: dir}, nil
 }
 
-// CleanTmp ;; deletes leftovers of uploads that got killed halfway, returns how many.
-// only call this while holding the data dir lock and before serving, otherwise it eats live uploads.
+// CleanTmp ;; deletes /tmp only the .lock owner should be calling this!
 func (b *Blobby) CleanTmp() (int, error) {
 	tmp := filepath.Join(b.dir, "tmp")
 	entries, err := os.ReadDir(tmp)
@@ -160,8 +159,7 @@ func (b *Blobby) Delete(s string) error {
 	return syncDir(filepath.Dir(p))
 }
 
-// Walk ;; calls fn for every blob on disk with its sha and mod time, tmp and quarantine are not blobs.
-// only files sitting exactly where Open would look for them count.
+// Walk ;; calls fn for every blob sha, ignores tmp and quarantine because those are not committed.
 func (b *Blobby) Walk(fn func(sha string, modTime time.Time) error) error {
 	return filepath.WalkDir(b.dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {

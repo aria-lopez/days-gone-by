@@ -12,6 +12,7 @@
 *.test
 
 dist/
+.dev.env
 
 # Code coverage profiles and other test artifacts
 *.out

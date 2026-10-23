@@ -123,7 +123,9 @@ func defaultPath() (string, error) {
 }
 
 // Path formaters
-func (s *State) DBpath() string     { return filepath.Join(s.defaultPath, "squel.db") }
+// dbPath ;; where the db lives inside a data dir, the cli commands need it without a whole State
+func dbPath(root string) string     { return filepath.Join(root, "squel.db") }
+func (s *State) DBpath() string     { return dbPath(s.defaultPath) }
 func (s *State) Blobbypath() string { return filepath.Join(s.defaultPath, "blobs") }
 
 // Close ;; Cleans up anything required at destruction of app.

@@ -17,6 +17,7 @@ var ErrNotFound = errors.New("not found")
 type Squeal struct {
 	db     *sql.DB
 	nodeID string
+	path   string // ;; absolute path of the db file, migrations back it up next to itself
 }
 
 // utils
@@ -41,7 +42,12 @@ func getdsn(path string) (string, error) {
 // NewSqueal ;; Returns a new instance of Squeal
 func NewSqueal(ctx context.Context, path string) (*Squeal, error) {
 	s := Squeal{}
-	dsn, err := getdsn(path)
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	s.path = abs
+	dsn, err := getdsn(abs)
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +72,7 @@ func NewSqueal(ctx context.Context, path string) (*Squeal, error) {
 }
 
 func (s *Squeal) init(ctx context.Context) error {
-	if _, err := s.db.ExecContext(ctx, schema); err != nil {
+	if err := s.checkVersion(ctx); err != nil {
 		return err
 	}
 	// seed meta for node

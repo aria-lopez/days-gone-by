@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // lock_unix; flock (file lock not the crazy company) manager incase you have multiple instances
@@ -41,11 +42,26 @@ func lockDir(dir string) (*os.File, error) {
 	return f, nil
 }
 
-// lockHolder ;; try to get lock holder (maybe this wont work always)
+// lockHolder ;; best effort " (pid 1234)" of whoever holds the lock.
+// the holder writes its pid right AFTER taking the lock, so for a split second the file can still
+// have the previous holders pid. we only trust a pid thats alive and look a few times before giving up
 func lockHolder(path string) string {
-	b, err := os.ReadFile(path)
-	if err != nil || strings.TrimSpace(string(b)) == "" {
-		return ""
+	for range 5 {
+		if b, err := os.ReadFile(path); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pidAlive(pid) {
+				return " (pid " + strconv.Itoa(pid) + ")"
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
-	return " (pid " + strings.TrimSpace(string(b)) + ")"
+	return ""
+}
+
+// pidAlive ;; signal 0 checks the process exists without sending anything
+func pidAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM) // EPERM = exists but not ours
 }

@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -11,17 +13,37 @@ import (
 	"time"
 
 	"github.com/aria-lopez/days-gone-by/apeye"
+	"github.com/aria-lopez/days-gone-by/bouncer"
 	"github.com/aria-lopez/days-gone-by/logger"
 )
 
+// isLoopback ;; true if addr only listens on this machine. ":8080" listens on every interface so it is not
+func isLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func main() {
-	if err := run(); err != nil {
+	err := dispatch(os.Args[1:])
+	if errors.Is(err, errUsage) {
+		fmt.Fprint(os.Stderr, usage)
+		os.Exit(2)
+	}
+	if err != nil {
 		logger.ErrorF(err, "days-gone-by stopped")
 		os.Exit(1)
 	}
 }
 
-func run() error {
+// serve ;; runs the server until ctrl-c or SIGTERM
+func serve() error {
 	startCtx, cancelStart := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancelStart()
 
@@ -30,9 +52,22 @@ func run() error {
 		return fmt.Errorf("error during setup of application: %w", err)
 	}
 	defer state.Close()
-	logger.InfoF(" running addr [%s] path [%s]", state.serverAddr, state.defaultPath)
 
-	api := apeye.NewAPI(state.store, state.squeal, int(state.maxUpload))
+	// no keys means nobody could ever get in, so dont pretend to be running
+	total, _, err := state.squeal.CountActiveKeys(startCtx)
+	if err != nil {
+		return fmt.Errorf("couldnt check for api keys: %w", err)
+	}
+	if total == 0 {
+		return errors.New("there are no api keys yet, run `days-gone-by init` first")
+	}
+
+	logger.InfoF(" running addr [%s] path [%s] api keys [%d]", state.serverAddr, state.defaultPath, total)
+	if !isLoopback(state.serverAddr) {
+		logger.InfoF("WARNING [%s] is reachable from other machines and keys travel in a header, put TLS (a reverse proxy) in front of it", state.serverAddr)
+	}
+
+	api := apeye.NewAPI(state.store, state.squeal, bouncer.New(state.squeal), int(state.maxUpload))
 	srv := &http.Server{
 		Addr:              state.serverAddr,
 		Handler:           api.Routes(),

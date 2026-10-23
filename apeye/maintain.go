@@ -12,14 +12,13 @@ import (
 
 // FIXME: [config]
 const (
-	purgeEvery   = 10 * time.Minute // ;; how often unused blobs get their bytes removed
+	purgeEvery   = 10 * time.Minute // ;; how often unused blobs get checked for removal
 	orphanEvery  = 24 * time.Hour   // ;; how often we walk every file looking for orphans
-	orphanMinAge = 24 * time.Hour   // ;; a file younger than this is never an orphan
-	chunkSize    = 100              // ;; blobs handled per lock hold so uploads dont wait on a long sweep
+	orphanMinAge = 24 * time.Hour   // ;; a file younger than this is never an orphan (so we dont scan new stuff)
+	chunkSize    = 25               // ;; blobs handled per lock hold so uploads dont wait on a long sweep
 )
 
-// Maintain ;; housekeeping loop, runs a sweep right away then keeps going until ctx is done.
-// stop it and wait for it before closing the db.
+// Maintain ;; general cleanup for oprhaned files or blobs to be removed
 func (a *API) Maintain(ctx context.Context) {
 	t := time.NewTicker(purgeEvery)
 	defer t.Stop()
@@ -40,8 +39,7 @@ func (a *API) Maintain(ctx context.Context) {
 	}
 }
 
-// sweep ;; removes the bytes of every blob that has no live image, in chunks.
-// catches whatever a DELETE /images skipped because uploads were in flight
+// sweep ;; delete blobs that dont have a live record, in chunks.
 func (a *API) sweep(ctx context.Context) {
 	shas, err := a.squeal.PurgeCandidates(ctx)
 	if err != nil {
@@ -68,10 +66,6 @@ func (a *API) sweep(ctx context.Context) {
 }
 
 // sweepOrphans ;; moves files nobody owns into quarantine/, never deletes them.
-// an orphan is a file on disk the db doesnt count as live: no blobs row or a purged one.
-// they come from crashes between Put and AddImage, or from restoring an older db next to newer blobs,
-// which is exactly why we park them instead of deleting.
-// returns true only if it got through every orphan it found
 func (a *API) sweepOrphans(ctx context.Context) bool {
 	// 1. look without the lock, this walks every file so it can take a while
 	cutoff := time.Now().Add(-orphanMinAge)
@@ -123,7 +117,6 @@ func (a *API) sweepOrphans(ctx context.Context) bool {
 }
 
 // quarantine ;; parks the given blobs unless they became live since we looked.
-// returns false if uploads are in flight, nothing is touched then. count is how many got parked
 func (a *API) quarantine(ctx context.Context, shas []string) (ran bool, count int, err error) {
 	if !a.mu.TryLock() {
 		return false, 0, nil
