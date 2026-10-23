@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/aria-lopez/days-gone-by/blobby"
 	"github.com/aria-lopez/days-gone-by/logger"
@@ -29,6 +30,8 @@ func (a *API) Routes() http.Handler {
 
 	// POST
 	mux.HandleFunc("POST /images", a.postImage)
+	// GET
+	mux.HandleFunc("GET /blobs/{sha256}", a.getBlob)
 
 	return mux
 }
@@ -83,4 +86,28 @@ func (a *API) postImage(w http.ResponseWriter, r *http.Request) {
 		"mime":   mime,
 	})
 	logger.InfoF("POST /images succeeded sha256 [%s]", info.SHA256)
+}
+
+// getBlob ;; returns [Blob] of a given sha256 if it exists
+func (a *API) getBlob(w http.ResponseWriter, r *http.Request) {
+	sum := r.PathValue("sha256")
+	f, err := a.store.Open(sum)
+	if err != nil {
+		if errors.Is(err, blobby.ErrNotFound) {
+			logger.ErrorF(nil, "GET /blobs/%s not found", sum)
+			http.NotFound(w, r)
+			return
+		}
+		logger.ErrorF(nil, "GET /blobs/%s internal error during Blobby.getBlob", sum)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+
+	w.Header().Set("ETag", `"`+sum+`"`)
+	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+
+	logger.InfoF("GET /blobs/%s serving blob...", sum)
+	http.ServeContent(w, r, "", time.Time{}, f)
 }

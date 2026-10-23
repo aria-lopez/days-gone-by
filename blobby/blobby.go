@@ -4,6 +4,7 @@ package blobby
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -22,6 +23,24 @@ func syncDir(path string) error {
 	}
 	defer d.Close()
 	return d.Sync()
+}
+
+// path ;; gets path by sha key
+func (b *Blobby) path(s string) string {
+	return filepath.Join(b.dir, s[:2], s[2:4], s)
+}
+
+// validateSum ;; ensures given sha is 64chars so no one injects
+func validateSum(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // NewBlobby ;; Get a new Blobby and mount it to a dir.
@@ -60,10 +79,7 @@ func (b *Blobby) Put(r io.Reader) (BlobInfo, error) {
 	}
 	// name is the hash
 	sum := hex.EncodeToString(h.Sum(nil))
-	// make some leafs so not everything is in 1 dir
-	// its still deterministic since sum is the key
-	// in theory even at 100 million files we would end up with ~1,500 per leaf
-	destination := filepath.Join(b.dir, sum[:2], sum[2:4], sum)
+	destination := b.path(sum)
 	info := BlobInfo{SHA256: sum, Size: size}
 
 	// if its already there do nothing.
@@ -90,4 +106,18 @@ func (b *Blobby) Put(r io.Reader) (BlobInfo, error) {
 	}
 
 	return info, nil
+}
+
+var ErrNotFound = errors.New("blob not found")
+
+// Open ;; get a blob by its hash
+func (b *Blobby) Open(s string) (*os.File, error) {
+	if !validateSum(s) {
+		return nil, ErrNotFound
+	}
+	f, err := os.Open(b.path(s))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, ErrNotFound
+	}
+	return f, err
 }
