@@ -12,7 +12,6 @@
 *.test
 
 dist/
-.kyute/
 
 # Code coverage profiles and other test artifacts
 *.out
@@ -35,5 +34,6 @@ go.work.sum
 # .idea/
 # .vscode/
 
-# Claude suggestions (reference only, implemented manually)
+# llm notes
 llm/
+.kyute/
